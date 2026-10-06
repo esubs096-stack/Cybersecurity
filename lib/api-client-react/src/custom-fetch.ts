@@ -17,6 +17,8 @@ const DEFAULT_JSON_ACCEPT = "application/json, application/problem+json";
 
 let _baseUrl: string | null = null;
 let _authTokenGetter: AuthTokenGetter | null = null;
+let _csrfToken: string | null = null;
+let _csrfRequest: Promise<string> | null = null;
 
 /**
  * Set a base URL that is prepended to every relative request URL
@@ -76,6 +78,56 @@ function resolveUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") return input;
   if (isUrl(input)) return input.toString();
   return input.url;
+}
+
+function isSameOrigin(input: RequestInfo | URL): boolean {
+  if (typeof location === "undefined") return false;
+  try {
+    return new URL(resolveUrl(input), location.href).origin === location.origin;
+  } catch {
+    return false;
+  }
+}
+
+async function getCsrfToken(): Promise<string> {
+  if (_csrfToken) return _csrfToken;
+  if (!_csrfRequest) {
+    const endpoint = applyBaseUrl("/api/auth/csrf") as RequestInfo | URL;
+    _csrfRequest = (async () => {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { accept: DEFAULT_JSON_ACCEPT },
+      });
+      if (!response.ok) throw new Error("Unable to prepare a secure request.");
+      const body: unknown = await response.json();
+      if (
+        typeof body !== "object" ||
+        body === null ||
+        !("csrfToken" in body) ||
+        typeof body.csrfToken !== "string" ||
+        body.csrfToken.length < 32
+      ) {
+        throw new Error("The service returned an invalid request token.");
+      }
+      _csrfToken = body.csrfToken;
+      return body.csrfToken;
+    })().finally(() => {
+      _csrfRequest = null;
+    });
+  }
+  return _csrfRequest;
+}
+
+function updateCsrfToken(body: unknown): void {
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    "csrfToken" in body &&
+    typeof body.csrfToken === "string"
+  ) {
+    _csrfToken = body.csrfToken;
+  }
 }
 
 function mergeHeaders(...sources: Array<HeadersInit | undefined>): Headers {
@@ -349,6 +401,12 @@ export async function customFetch<T = unknown>(
     headers.set("accept", DEFAULT_JSON_ACCEPT);
   }
 
+  const sameOrigin = isSameOrigin(input);
+  const unsafeMethod = !["GET", "HEAD", "OPTIONS"].includes(method);
+  if (sameOrigin && unsafeMethod && !headers.has("x-csrf-token")) {
+    headers.set("x-csrf-token", await getCsrfToken());
+  }
+
   // Attach bearer token when an auth getter is configured and no
   // Authorization header has been explicitly provided.
   if (_authTokenGetter && !headers.has("authorization")) {
@@ -360,12 +418,27 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { ...init, method, headers });
+  const response = await fetch(input, {
+    ...init,
+    method,
+    headers,
+    credentials: init.credentials ?? "same-origin",
+  });
 
   if (!response.ok) {
+    if (sameOrigin && unsafeMethod && response.status === 403) _csrfToken = null;
     const errorData = await parseErrorBody(response, method);
     throw new ApiError(response, errorData, requestInfo);
   }
 
-  return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  const result = await parseSuccessBody(response, responseType, requestInfo);
+  updateCsrfToken(result);
+  if (
+    sameOrigin &&
+    typeof location !== "undefined" &&
+    new URL(resolveUrl(input), location.href).pathname.endsWith("/auth/logout")
+  ) {
+    _csrfToken = null;
+  }
+  return result as T;
 }

@@ -1,0 +1,155 @@
+# VaultShare: Build Prompts (v3)
+
+How to use:
+1. Paste the **Master Prompt** into your AI builder first.
+2. Send **Phase 1**. When its tests pass, send Phase 2, and so on.
+3. Start every new chat with: "Read PROGRESS.md and DECISIONS.md, then continue with Phase N."
+
+---
+
+## Master Prompt (paste first)
+
+````
+ROLE
+You are a senior full-stack and application-security engineer. Build VaultShare, a zero-trust secure document sharing web app for a Cybersecurity & Digital Safety hackathon, in phases. I will send one phase prompt at a time.
+Tagline: "Don't just share files. Control their entire lifecycle."
+Hero: "Your Documents. Your Rules. Your Security."
+Subtitle: "Securely share sensitive documents with precise access controls, automatic expiration, instant revocation, and tamper-evident audit trails."
+
+WORKING RULES
+- No clarifying questions. Choose the most secure reasonable option, log it in DECISIONS.md, continue.
+- At the start of every session, read PROGRESS.md and DECISIONS.md. Update both after every phase.
+- Tiers: P0 must fully work; P1 simple working version; P2 only if time remains. Cut order: P2, P1, never P0.
+- Minimum winning demo (never cut): auth, upload + encryption, share + expiry + revoke, access engine, audit chain + verify + tamper demo, alerts, judge mode.
+- Never fake security: no decorative indicators, no fake PASS, no invented data. Simulated things carry a visible "Prototype / Simulated" label in UI and README.
+- Fail closed: any error or ambiguity in a security decision means DENY.
+- All security decisions are server-side; frontend checks are cosmetic. One shared module per rule, reused everywhere.
+- No secrets, keys or passwords in source. .env.example holds placeholders only.
+- Only claim what you actually ran. Anything unrun or unseen is reported as "not verified".
+
+STACK
+Next.js (App Router, pinned version) + TypeScript, single repo; pages are dynamic (nonce CSP). Prisma + SQLite for dev, Postgres-portable (no Prisma enums or Json; validated strings and boolean columns). Tailwind, shadcn/ui, Recharts, Framer Motion, lucide-react, @node-rs/argon2 (argon2id), Node crypto, Zod, otplib, qrcode, pdfjs-dist (local worker), pdf-lib, nanoid, Vitest. Commit the lockfile.
+Scripts: seed, dev, build, test, gen:keys, demo:reset.
+Env (validated by Zod at startup via instrumentation.ts; refuse to start if missing, weak or placeholder in production): MASTER_KEY, AUDIT_HMAC_KEY, CSRF_SECRET (distinct 32-byte base64 values), STORAGE_DIR, AUDIT_CHECKPOINT_PATH, DEMO_MODE, DEMO_PASSWORD, ADMIN_EMAIL, TRUSTED_PROXY_COUNT, MAX_UPLOAD_MB. Derive subkeys with HKDF ("file-kek", "totp", "csrf").
+Layout: /app, /components, /lib/{auth,authorization,crypto,storage,audit,detection,validation,ratelimit,mail}, /prisma, /tests/{unit,integration,security}. STORAGE_DIR is outside public/ and never served statically.
+Middleware runs on the Edge: use it ONLY for the CSP nonce, security headers and cheap redirects. AuthN/AuthZ live in a server-side data-access layer (requireUser, requireAdmin). Use route handlers (fetch) for all mutations, no server actions.
+
+ARCHITECTURE INVARIANTS
+- authorize(actor, action, resource): the single policy function (documents, shares, audit, users, settings). Deny by default.
+- authorizeAccess(request, tokenOrDocRef, action): the share/document engine. It composes authorize() and returns {allow, code, userMessage, auditAction, reason}.
+- A test enumerates all route files and asserts each has a declared guard; an unauthenticated call returns 401/403.
+- Roles: admin, user. Owner and recipient are per-document relationships. Admins manage users, view alerts and audit metadata, verify integrity and edit policies. They CANNOT decrypt or view content. Display names are masked in admin views unless DEMO_MODE. Admins cannot disable themselves or the last admin.
+- Errors are generic: "Invalid credentials." / "You do not have permission to access this resource." / "This link is invalid or unavailable." / "Too many attempts. Try again later." Responses carry a request ID. Never expose stack traces, internal IDs, paths, tokens or metadata. Logs are structured and redact secrets and tokens.
+- External identifiers are nanoid public_ids only.
+````
+
+---
+
+## Phase 1: Foundation
+
+````
+Build env validation, schema (all tables below), auth, sessions, CSRF, rate limits, authorize().
+- Tables: users, sessions, share_sessions, documents, shares, comments, audit_logs, security_alerts, alert_events, notifications, policies, rate_limit_buckets, auth_tokens, backup_codes. Foreign keys with no cascade on audited entities; users/documents are soft-deleted only. Indexes on token_hash, audit seq, (document_id, created), rate-limit key, alerts (status, severity).
+- Register: name, email, password (12-128 chars, strength meter, 500+ common-password list). The response never confirms whether the email exists. A dev mailer (console + dev-only /dev/mailbox) is labelled Simulated.
+- Login: argon2id with a dummy verify for unknown emails. Always "Invalid credentials."
+- Session: 256-bit ID, store SHA-256 only, HttpOnly, SameSite=Lax, `__Host-` prefix + Secure in production only. Rotate on login. Idle 30 min, absolute 12 h. Revocation applies on the next request.
+- Rate limits: DB buckets keyed by submitted-email string (whether or not the account exists), IP, (share, IP), upload per user. Login: 5 fails/15 min gives a 15 min lock with progressive delay. Admin unlock. Document the lockout-DoS trade-off.
+- getClientIp() is the only IP source (TRUSTED_PROXY_COUNT, otherwise the socket address).
+- CSRF: Origin check + X-CSRF-Token = HMAC(csrf subkey, session id); anonymous routes use a double-submit cookie. GET never mutates. "next" redirects accept same-origin relative paths only.
+- P1: TOTP (replay-proof by last time step, secret encrypted, 8 hashed backup codes, pending-2FA session has no privileges); email verification and password reset with hashed single-use tokens; session management page.
+````
+
+---
+
+## Phase 2: Storage
+
+````
+Build upload, validation, encryption, delivery, delete.
+- Allowed: pdf, doc, docx, xls, xlsx, ppt, pptx, txt, jpg, png; max MAX_UPLOAD_MB. Blocked: svg, html, js, macro Office types. Enforce size by Content-Length AND a streaming byte cap.
+- Validate extension, declared MIME and magic bytes. PDF: "%PDF-" in the first 1 KB; reject /JavaScript, /JS, /Launch (documented policy). JPG/PNG signatures. doc/xls/ppt: OLE signature (macros undetectable, label it). docx/xlsx/pptx: valid ZIP with [Content_Types].xml, reject vbaProject.bin, cap entries, uncompressed size and ratio. txt: valid UTF-8, no NUL. Malware scan = stub labelled Prototype / Simulated.
+- Filename never reaches storage. Storage name = random 128-bit hex, sharded, mode 0600. Display name is sanitized (separators, control chars, trailing dots, double extensions, length). Assert the resolved path stays inside STORAGE_DIR.
+- Duplicates by (owner, plaintext SHA-256): warn, allow keep-both. Real progress bar. Status uploading -> encrypting -> ready | failed.
+- Envelope encryption: per-file 256-bit DEK, AES-256-GCM, 96-bit random IV, AAD = public_id + version. The DEK is wrapped with the "file-kek" subkey. Metadata {version, key_id, iv, tag, wrapped_dek, wrap_iv, wrap_tag}. Verify the GCM tag BEFORE sending any byte; a failure means deny + alert.
+- Delete: remove ciphertext, wipe wrapped DEK (crypto-shred), revoke all shares, soft-delete, audit.
+- Delivery headers: allow-listed Content-Type, safe Content-Disposition (RFC 6266), Cache-Control: no-store, nosniff, CSP "default-src 'none'; sandbox". Inline only for PDF/images in the viewer.
+````
+
+---
+
+## Phase 3: Sharing and Access Engine
+
+````
+Build shares and authorizeAccess().
+- Modes: Link (token holder may attempt access) and Recipient-bound (token AND a session matching recipient_id, or a VERIFIED email equal to recipient_email; unverified never matches).
+- Token = randomBytes(32), base64url, only SHA-256 stored (unique index). The link is shown ONCE with "Save this link now. For security, the complete token will not be displayed again." The share page sends no-referrer and noindex; logs redact tokens.
+- Expiry presets 10 min / 1 h / 24 h / 7 d / custom (policy max enforced). Demo-only 30 s and 60 s presets when DEMO_MODE=true.
+- Permissions: view (not DRM, label it), download, print (best-effort UI, labelled "Prototype / Best-effort browser control"), comment (P1, plain text, capped, rate-limited), reshare (P2, child permissions are a subset, parent revoke cascades). A share needs view or download. Edits apply on the next request; no decision caching.
+- Revoke one; "Revoke all shares" with "Are you sure? This will immediately revoke access for all recipients."
+Engine order, on EVERY request:
+1 IP rate limit. 2 Hash token, constant-time lookup; not found gives "This link is invalid or unavailable." (audit, no state leak). 3 Revoked gives "ACCESS DENIED. The document owner has revoked your access." (ACCESS_AFTER_REVOCATION). 4 Expired (request-time check; first hit audits SHARE_EXPIRED via a stored marker, later ones ACCESS_AFTER_EXPIRY) gives "This secure link has expired." 5 Document and owner active. 6 Recipient check. 7 Share password: increment the attempt counter BEFORE verifying; max 5 per (share, IP) per 10 min, then 15 min lock; on success issue a 15-min hashed, share-bound HttpOnly share-session that is re-validated through steps 2-6 on every request. 8 Permission. 9 Max downloads via atomic `UPDATE ... SET download_count=download_count+1 WHERE download_count<max`; 0 rows means deny; roll back if bytes are not sent. 10 System policies. 11 Append audit; if it fails, DENY. 12 Decrypt, verify tag, stream.
+Revoked and expired details appear only after the token hash matched.
+````
+
+---
+
+## Phase 4: Audit
+
+````
+Build the tamper-evident audit log (headline feature).
+- Fields: seq (contiguous from 1), timestamp (UTC ISO ms), actor_public_id, document_public_id, share_public_id, action, ip, user_agent, result (SUCCESS|FAILED), reason, prev_hash, event_hash.
+- event_hash = HMAC-SHA256(AUDIT_HMAC_KEY, canonicalJSON + "|" + prev_hash); canonical = fixed key order, no whitespace, explicit nulls; genesis = 64 zeros. The key lives only in env.
+- Appends: one transaction reads the last row and inserts seq+1 under UNIQUE(seq); retry on conflict (no forked chains; do not rely on BEGIN IMMEDIATE through Prisma).
+- Append-only: a hand-written SQL migration adds triggers rejecting UPDATE/DELETE.
+- Checkpoint: on every append write {seq, head, HMAC(seq|head)} to AUDIT_CHECKPOINT_PATH (outside the DB); verification compares the tail to it, which catches truncation.
+- Verify Audit Integrity detects modified, deleted, inserted and reordered rows, seq gaps, hash mismatches and truncation. Show "✓ Audit log integrity verified" or "⚠ Audit log tampering detected" with first broken seq, expected vs actual hash, and the head with a copy button. State the limit honestly (an attacker holding DB + filesystem + keys can forge a chain; external anchoring mitigates). Verify once at startup and lazily with a 10-min cache, not via cron.
+- Actions: REGISTER, LOGIN, LOGOUT, LOGIN_FAILED, ACCOUNT_LOCKED, PASSWORD_CHANGED, TWO_FA_ENABLED, TWO_FA_DISABLED, SESSION_REVOKED, UPLOAD, DOCUMENT_ENCRYPTED, DOCUMENT_VIEW, DOCUMENT_DOWNLOAD, DOCUMENT_DELETE, SHARE_CREATED, SHARE_ACCESS, SHARE_EXPIRED, PERMISSION_CHANGED, ACCESS_REVOKED, REVOKE_ALL, SHARE_PASSWORD_FAILED, SHARE_PASSWORD_OK, ACCESS_DENIED, ACCESS_AFTER_REVOCATION, ACCESS_AFTER_EXPIRY, COMMENT_ADDED, SUSPICIOUS_ACTIVITY, ALERT_STATUS_CHANGED, ACCOUNT_DISABLED, ACCOUNT_ENABLED, POLICY_CHANGED, INTEGRITY_VERIFIED, SECURITY_SELF_TEST_RUN, DEMO_TAMPER_SIMULATED, DEMO_RESET.
+- Never log passwords, tokens, keys or contents. Audit page: filter, search, per-row chain status, CSV export with formula-injection neutralization; all user strings output-encoded.
+- Security Timeline per document from real events: UPLOAD, ENCRYPTED, SHARED, VIEWED, DOWNLOADED, PERMISSION CHANGED, REVOKED/EXPIRED (icon, action, time, actor, result).
+````
+
+---
+
+## Phase 5: Detection and Scores
+
+````
+Rules (thresholds editable in policies): R1 >=5 failed logins/account/10 min (25); R2 >=5 wrong share passwords/share/10 min (30); R3 >=10 failed accesses/IP/5 min (30); R4 >=3 expired/revoked attempts/10 min (25); R5 >=5 downloads/document/actor/10 min (25); R6 (P1) >=3 IP+UA fingerprints on one share/10 min (20), labelled "Prototype / Heuristic (no GeoIP)".
+- Evaluate inline after relevant audit appends; detection errors never block (the access decision itself still fails closed). Dedupe to one open alert per (rule, subject) per window with count/last_seen, plus an hourly cap. Owners get document/share alerts; admins get R1/R3.
+- Risk = min(100, sum of weights fired for the subject in 60 min, +10 if a count reaches 2x threshold). Severity <40 low, 40-69 medium, >=70 high. Show contributors. Never call it ML. Statuses OPEN/INVESTIGATING/RESOLVED (audited). Admin Investigate view lists the related audit seqs.
+- Document status: ⚪ Private (never shared) | 🟡 Expiring Soon (an active share expires <24 h) | 🟢 Secure | ⚫ Access Revoked (no active shares, all revoked) | 🔴 Expired (no active shares, otherwise). Icon + text; show next expiry, recipients, active shares.
+- Security score (0-100, computed): 2FA 20 | expiring shares 20 x share of active shares within policy max | least privilege 15 x share of active shares that are recipient-bound, password-protected or download-disabled | audit verified within 24 h 20 (system-level, labelled) | no open high alerts 15 (7 if only INVESTIGATING) | encryption round-trip self-check 10. Show a per-factor breakdown. Notifications (P1): bell, 15 s polling.
+````
+
+---
+
+## Phase 6: UI
+
+````
+Dark glassmorphism cybersecurity control center; restrained motion; WCAG AA; visible focus; labels/ARIA; no color-only status; Inter + monospace for hashes. Responsive at 375/768/1024/1440 (drawer sidebar, tables become cards).
+- Sidebar: Dashboard, My Documents, Shared With Me, Access Management, Audit Logs, Security Alerts, Security Settings, Profile, Admin (admins only). Top bar: search (P1, authorized only), bell, security chip, user menu.
+- Landing: hero, CTAs "Get Started" / "See Security", animated DOCUMENT -> ENCRYPTION -> ACCESS CONTROL -> SECURE SHARE -> AUDIT TRAIL, truthful comparison of "email attachments and open links" vs VaultShare (do not claim mainstream drives lack expiry or revocation).
+- Dashboard: score gauge + breakdown, stats, charts (access over time, success vs failure, shares by status, alerts by severity), all from the DB.
+- Documents table + detail tabs (Overview, Access, Security Timeline, Audit History). Share dialog: Recipient, Permissions, Security, Create (copy-once). Access Management: User | View | Download | Comment | Print | Expiration | Status with inline edit and revoke.
+- /share/[token]: password prompt; PDF.js with isEvalSupported:false, scripting off, local worker, zoom + page navigation; images inline; else "Preview unavailable. Download permission required."
+- CSP: default-src 'self'; script-src 'self' 'nonce-N' 'strict-dynamic'; style-src 'self' 'unsafe-inline' (documented); img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'. Add X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS (production). TLS is proxy-terminated (documented, labelled).
+- Admin: users, system audit, alerts, policies, Verify Audit Integrity, Security Self-Test.
+````
+
+---
+
+## Phase 7: Demo, Tests, Docs
+
+````
+DEMO_MODE=true only: otherwise demo endpoints return 404 and the UI is absent. Show a persistent "DEMO MODE" banner.
+- Seed: admin, owner Rahul, recipients Priya and Alex (verified); passwords from DEMO_PASSWORD or random printed once. Four fictional pdf-lib PDFs (Financial_Report, Project_Blueprint, Employee_Records, Legal_Agreement) with shares in secure / expiring soon / expired / revoked states (times relative to seed time). Build the audit trail through the normal append function.
+- "Switch user" (DEMO ONLY, a real login, labelled). Anonymous tests via a private window.
+- JUDGE MODE (<5 min): upload; encryption status; create share; 30-60 s expiry; open share; view/download; revoke; retry -> "ACCESS DENIED"; timeline; verify -> "✓ Audit log integrity verified"; trigger suspicious activity (the server sends REAL failed requests through the real engine so real rules fire; a Simulated X-Demo-Source-IP header may vary the source for R6); simulate tampering, then verify.
+- Tamper demo: in one transaction drop the trigger, modify a random mid-chain row, recreate the trigger, audit DEMO_TAMPER_SIMULATED; verification shows the REAL broken seq. A second button simulates tail truncation (checkpoint catches it). demo:reset rebuilds DB, storage, chain and checkpoint.
+- Security Self-Test: runs on an ISOLATED ephemeral DB, temp storage and test keys; never touches the live chain except one SECURITY_SELF_TEST_RUN event. Each test shows PASS/FAIL/SKIPPED with evidence; never convert FAIL to PASS. Cover: unauthenticated access, lockout, session revocation, IDOR, privilege escalation, unauthorized share edit/download, unverified-email binding, invalid/expired/revoked tokens, wrong-password limit, parallel max-download race, oversized/spoofed/MIME-mismatch/magic-mismatch/zip-bomb/path-traversal uploads, stored bytes != plaintext, tampered ciphertext rejected, audit modified/deleted/inserted/reordered/truncated.
+- Vitest also covers: authorize(), token hashing, expiry boundaries, CSRF rejection, filename sanitizer, audit canonicalization, route-registry coverage, CSV injection.
+- README: overview, architecture (Mermaid), data model, access flow, encryption design, audit design with limits, STRIDE table (threat, attack, mitigation, test), Real vs Simulated, setup, env vars, tests, demo guide, limitations, future work. Add DEMO_SCRIPT.md (3 min).
+- Claims: "designed with defense-in-depth and zero-trust authorization principles", never "unhackable".
+
+ACCEPTANCE (measurable): build and test exit 0; a fresh-clone setup works; every guarded route rejects unauthenticated calls; the IDOR test passes; revoked/expired links return the exact messages and are audited; tamper simulation fails at the real modified seq and truncation is detected; the parallel download test never exceeds the max; a grep finds no secret, token or storage path in source, bundles, logs or responses; the core flow works at 375 px (or is reported "not verified").
+
+FINAL REPORT: (1) fully real, (2) simulated or best-effort, (3) commands run and results, (4) not verified, (5) known limitations.
+````

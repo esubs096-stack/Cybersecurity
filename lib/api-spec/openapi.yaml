@@ -3,13 +3,20 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: VaultShare secure document sharing API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: auth
+  - name: dashboard
+  - name: documents
+  - name: shares
+  - name: audit
+  - name: alerts
+  - name: settings
+  - name: demo
 paths:
   /healthz:
     get:
@@ -24,7 +31,532 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /auth/csrf:
+    get:
+      operationId: getCsrfToken
+      tags: [auth]
+      summary: Obtain the CSRF token for the current browser session
+      responses:
+        "200":
+          description: CSRF token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CsrfResponse"
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      summary: Get the current authenticated user
+      responses:
+        "200":
+          description: Current user or anonymous state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthState"
+  /auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      summary: Register an account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterInput"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthState"
+        "400":
+          $ref: "#/components/responses/GenericError"
+        "429":
+          $ref: "#/components/responses/GenericError"
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Authenticate using email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Authenticated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthState"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "429":
+          $ref: "#/components/responses/GenericError"
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Revoke the current session
+      responses:
+        "200":
+          description: Session revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/GenericError"
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [dashboard]
+      summary: Get dashboard totals, security score and recent activity
+      responses:
+        "200":
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+        "401":
+          $ref: "#/components/responses/GenericError"
+  /documents:
+    get:
+      operationId: getDocuments
+      tags: [documents]
+      summary: List documents owned by the current user
+      responses:
+        "200":
+          description: Owned documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Document"
+        "401":
+          $ref: "#/components/responses/GenericError"
+    post:
+      operationId: uploadDocument
+      tags: [documents]
+      summary: Upload and encrypt a document
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/UploadInput"
+      responses:
+        "201":
+          description: Encrypted document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "400":
+          $ref: "#/components/responses/GenericError"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "413":
+          $ref: "#/components/responses/GenericError"
+        "429":
+          $ref: "#/components/responses/GenericError"
+  /documents/{documentId}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    delete:
+      operationId: deleteDocument
+      tags: [documents]
+      summary: Soft-delete a document and revoke all its shares
+      responses:
+        "200":
+          description: Document deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+        "404":
+          $ref: "#/components/responses/GenericError"
+  /documents/{documentId}/timeline:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      operationId: getDocumentTimeline
+      tags: [documents]
+      summary: Get the security timeline for an owned document
+      responses:
+        "200":
+          description: Document events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditEvent"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+  /documents/{documentId}/shares:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      operationId: getDocumentShares
+      tags: [shares]
+      summary: List shares for an owned document
+      responses:
+        "200":
+          description: Document shares
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Share"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+    post:
+      operationId: createShare
+      tags: [shares]
+      summary: Create a secure share; the token is returned once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShareInput"
+      responses:
+        "201":
+          description: Created share and one-time token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareCreated"
+        "400":
+          $ref: "#/components/responses/GenericError"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+        "404":
+          $ref: "#/components/responses/GenericError"
+  /shares:
+    get:
+      operationId: getShares
+      tags: [shares]
+      summary: List shares owned by the current user
+      responses:
+        "200":
+          description: Shares
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Share"
+        "401":
+          $ref: "#/components/responses/GenericError"
+  /shares/{shareId}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/ShareId"
+    post:
+      operationId: revokeShare
+      tags: [shares]
+      summary: Immediately revoke a share
+      responses:
+        "200":
+          description: Share revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+        "404":
+          $ref: "#/components/responses/GenericError"
+  /shares/{shareId}/permissions:
+    parameters:
+      - $ref: "#/components/parameters/ShareId"
+    patch:
+      operationId: updateSharePermissions
+      tags: [shares]
+      summary: Update permissions for an owned share
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SharePermissionsInput"
+      responses:
+        "200":
+          description: Updated share
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Share"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+        "404":
+          $ref: "#/components/responses/GenericError"
+  /public/shares/{token}:
+    parameters:
+      - $ref: "#/components/parameters/ShareToken"
+    get:
+      operationId: getPublicShare
+      tags: [shares]
+      summary: Get minimal share information without document contents
+      responses:
+        "200":
+          description: Public share state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicShare"
+        "404":
+          $ref: "#/components/responses/GenericError"
+        "410":
+          $ref: "#/components/responses/GenericError"
+  /public/shares/{token}/unlock:
+    parameters:
+      - $ref: "#/components/parameters/ShareToken"
+    post:
+      operationId: unlockPublicShare
+      tags: [shares]
+      summary: Verify share password and establish a short-lived share session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SharePasswordInput"
+      responses:
+        "200":
+          description: Access decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareAccessResult"
+        "403":
+          $ref: "#/components/responses/GenericError"
+        "404":
+          $ref: "#/components/responses/GenericError"
+        "429":
+          $ref: "#/components/responses/GenericError"
+  /public/shares/{token}/content:
+    parameters:
+      - $ref: "#/components/parameters/ShareToken"
+    get:
+      operationId: getPublicShareContent
+      tags: [shares]
+      summary: Deliver authorized decrypted content
+      responses:
+        "200":
+          description: Decrypted document bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "403":
+          $ref: "#/components/responses/GenericError"
+        "404":
+          $ref: "#/components/responses/GenericError"
+        "410":
+          $ref: "#/components/responses/GenericError"
+  /audit:
+    get:
+      operationId: getAuditEvents
+      tags: [audit]
+      summary: List authorized audit metadata
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Audit events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditEvent"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+  /audit/verify:
+    get:
+      operationId: verifyAudit
+      tags: [audit]
+      summary: Verify the audit chain and external checkpoint
+      responses:
+        "200":
+          description: Real verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IntegrityResult"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+  /alerts:
+    get:
+      operationId: getAlerts
+      tags: [alerts]
+      summary: List alerts visible to the current user
+      responses:
+        "200":
+          description: Security alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SecurityAlert"
+        "401":
+          $ref: "#/components/responses/GenericError"
+  /alerts/{alertId}:
+    parameters:
+      - name: alertId
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      operationId: updateAlertStatus
+      tags: [alerts]
+      summary: Change a visible alert status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertStatusInput"
+      responses:
+        "200":
+          description: Updated alert
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecurityAlert"
+        "401":
+          $ref: "#/components/responses/GenericError"
+        "403":
+          $ref: "#/components/responses/GenericError"
+        "404":
+          $ref: "#/components/responses/GenericError"
+  /settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Get the current user's security settings
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecuritySettings"
+        "401":
+          $ref: "#/components/responses/GenericError"
+    put:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Update the current user's security settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecuritySettingsInput"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecuritySettings"
+        "401":
+          $ref: "#/components/responses/GenericError"
+  /demo/status:
+    get:
+      operationId: getDemoStatus
+      tags: [demo]
+      summary: Get demo availability without enabling demo features
+      responses:
+        "200":
+          description: Demo mode status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoStatus"
+  /demo/tamper:
+    post:
+      operationId: simulateAuditTamper
+      tags: [demo]
+      summary: Deliberately alter a real audit record in demo mode
+      responses:
+        "200":
+          description: Tamper operation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "404":
+          $ref: "#/components/responses/GenericError"
 components:
+  parameters:
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 8
+    ShareId:
+      name: shareId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 8
+    ShareToken:
+      name: token
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 32
+  responses:
+    GenericError:
+      description: Generic error response
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +565,387 @@ components:
           type: string
       required:
         - status
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        requestId:
+          type: string
+      required: [error, requestId]
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, user]
+        emailVerified:
+          type: boolean
+        twoFactorEnabled:
+          type: boolean
+      required: [id, name, email, role, emailVerified, twoFactorEnabled]
+    AuthState:
+      type: object
+      properties:
+        user:
+          oneOf:
+            - $ref: "#/components/schemas/User"
+            - type: "null"
+        csrfToken:
+          type: string
+      required: [user, csrfToken]
+    CsrfResponse:
+      type: object
+      properties:
+        csrfToken:
+          type: string
+      required: [csrfToken]
+    RegisterInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+      required: [name, email, password]
+    LoginInput:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+      required: [email, password]
+    Dashboard:
+      type: object
+      properties:
+        documents:
+          type: integer
+        activeShares:
+          type: integer
+        openAlerts:
+          type: integer
+        securityScore:
+          type: integer
+        scoreFactors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScoreFactor"
+        recentActivity:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        accessByDay:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessDay"
+      required: [documents, activeShares, openAlerts, securityScore, scoreFactors, recentActivity, accessByDay]
+    ScoreFactor:
+      type: object
+      properties:
+        name:
+          type: string
+        points:
+          type: integer
+        maximum:
+          type: integer
+        detail:
+          type: string
+      required: [name, points, maximum, detail]
+    AccessDay:
+      type: object
+      properties:
+        day:
+          type: string
+        success:
+          type: integer
+        failed:
+          type: integer
+      required: [day, success, failed]
+    Document:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        mime:
+          type: string
+        size:
+          type: integer
+        status:
+          type: string
+          enum: [ready, uploading, encrypting, failed, deleted]
+        securityStatus:
+          type: string
+          enum: [private, expiring_soon, secure, access_revoked, expired]
+        activeShares:
+          type: integer
+        nextExpiry:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, mime, size, status, securityStatus, activeShares, nextExpiry, createdAt]
+    UploadInput:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+        displayName:
+          type: string
+          maxLength: 180
+      required: [file]
+    Share:
+      type: object
+      properties:
+        id:
+          type: string
+        documentId:
+          type: string
+        documentName:
+          type: string
+        mode:
+          type: string
+          enum: [link, recipient]
+        recipientEmail:
+          type: ["string", "null"]
+        permissions:
+          type: array
+          items:
+            type: string
+            enum: [view, download, print, comment, reshare]
+        passwordProtected:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [active, revoked, expired]
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, documentId, documentName, mode, recipientEmail, permissions, passwordProtected, expiresAt, status, createdAt]
+    ShareInput:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [link, recipient]
+        recipientEmail:
+          type: string
+          format: email
+        permissions:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [view, download, print, comment, reshare]
+        expiresIn:
+          type: integer
+          minimum: 1
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+        maxDownloads:
+          type: integer
+          minimum: 1
+      required: [mode, permissions, expiresIn]
+    ShareCreated:
+      type: object
+      properties:
+        share:
+          $ref: "#/components/schemas/Share"
+        url:
+          type: string
+          format: uri
+        notice:
+          type: string
+      required: [share, url, notice]
+    SharePermissionsInput:
+      type: object
+      properties:
+        permissions:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [view, download, print, comment, reshare]
+      required: [permissions]
+    PublicShare:
+      type: object
+      properties:
+        documentName:
+          type: string
+        mime:
+          type: string
+        size:
+          type: integer
+        expiresAt:
+          type: string
+          format: date-time
+        passwordRequired:
+          type: boolean
+        permissions:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, revoked, expired, unavailable]
+        message:
+          type: string
+      required: [documentName, mime, size, expiresAt, passwordRequired, permissions, status, message]
+    SharePasswordInput:
+      type: object
+      properties:
+        password:
+          type: string
+          maxLength: 128
+      required: [password]
+    ShareAccessResult:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+        message:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+      required: [allowed, message, permissions]
+    AuditEvent:
+      type: object
+      properties:
+        seq:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+        actor:
+          type: string
+        documentId:
+          type: ["string", "null"]
+        shareId:
+          type: ["string", "null"]
+        action:
+          type: string
+        result:
+          type: string
+          enum: [SUCCESS, FAILED]
+        reason:
+          type: ["string", "null"]
+        eventHash:
+          type: string
+        chainValid:
+          type: boolean
+      required: [seq, timestamp, actor, documentId, shareId, action, result, reason, eventHash, chainValid]
+    IntegrityResult:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        checkedAt:
+          type: string
+          format: date-time
+        firstBrokenSeq:
+          type: ["integer", "null"]
+        expectedHash:
+          type: ["string", "null"]
+        actualHash:
+          type: ["string", "null"]
+        head:
+          type: string
+        message:
+          type: string
+        limit:
+          type: string
+      required: [valid, checkedAt, firstBrokenSeq, expectedHash, actualHash, head, message, limit]
+    SecurityAlert:
+      type: object
+      properties:
+        id:
+          type: string
+        rule:
+          type: string
+        severity:
+          type: string
+          enum: [low, medium, high]
+        risk:
+          type: integer
+        subject:
+          type: string
+        count:
+          type: integer
+        status:
+          type: string
+          enum: [OPEN, INVESTIGATING, RESOLVED]
+        lastSeen:
+          type: string
+          format: date-time
+      required: [id, rule, severity, risk, subject, count, status, lastSeen]
+    AlertStatusInput:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [OPEN, INVESTIGATING, RESOLVED]
+      required: [status]
+    SecuritySettings:
+      type: object
+      properties:
+        twoFactorEnabled:
+          type: boolean
+        defaultExpirySeconds:
+          type: integer
+        maxShareExpirySeconds:
+          type: integer
+      required: [twoFactorEnabled, defaultExpirySeconds, maxShareExpirySeconds]
+    SecuritySettingsInput:
+      type: object
+      properties:
+        defaultExpirySeconds:
+          type: integer
+          minimum: 600
+        maxShareExpirySeconds:
+          type: integer
+          minimum: 600
+      required: [defaultExpirySeconds, maxShareExpirySeconds]
+    DemoStatus:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        judgeModeAvailable:
+          type: boolean
+      required: [enabled, judgeModeAvailable]
 

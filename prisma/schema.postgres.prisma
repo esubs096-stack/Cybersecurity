@@ -1,0 +1,246 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("VAULTSHARE_DATABASE_URL")
+}
+
+// Keep this model set in sync with schema.prisma. The schema intentionally uses
+// scalar strings and booleans instead of Prisma enums or Json fields so the
+// data model stays portable between SQLite development and PostgreSQL hosting.
+model User {
+  id                 String       @id @default(cuid())
+  publicId           String       @unique
+  name               String
+  email              String       @unique
+  passwordHash       String
+  role               String       @default("user")
+  emailVerified      Boolean      @default(false)
+  active             Boolean      @default(true)
+  twoFactorEnabled   Boolean      @default(false)
+  twoFactorSecretEnc String?
+  lastTotpStep       Int?
+  failedLoginCount   Int          @default(0)
+  lockedUntil        DateTime?
+  deletedAt          DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  sessions           Session[]
+  backupCodes        BackupCode[]
+  authTokens         AuthToken[]
+  ownedDocuments     Document[]   @relation("DocumentOwner")
+  recipientShares    Share[]      @relation("ShareRecipient")
+  comments           Comment[]
+  notifications      Notification[]
+  securityAlerts     SecurityAlert[] @relation("AlertOwner")
+  actorAuditEvents   AuditLog[]   @relation("AuditActor")
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  tokenHash   String   @unique
+  userId      String
+  createdAt   DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  idleExpires DateTime
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  user        User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model ShareSession {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  shareId    String
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  share      Share    @relation(fields: [shareId], references: [id], onDelete: Restrict)
+  @@index([shareId, expiresAt])
+}
+
+model Document {
+  id                String    @id @default(cuid())
+  publicId          String    @unique
+  ownerId           String
+  displayName       String
+  mimeType          String
+  byteSize          Int
+  plaintextSha256   String
+  encryptedPath     String
+  status            String    @default("ready")
+  encryptionVersion Int       @default(1)
+  keyId             String
+  iv                String
+  tag               String
+  wrappedDek        String
+  wrapIv            String
+  wrapTag           String
+  deletedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  owner             User      @relation("DocumentOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  shares            Share[]
+  comments          Comment[]
+  auditEvents       AuditLog[]
+  @@unique([ownerId, plaintextSha256])
+  @@index([ownerId, createdAt])
+  @@index([status, deletedAt])
+}
+
+model Share {
+  id               String        @id @default(cuid())
+  publicId         String        @unique
+  documentId       String
+  tokenHash        String        @unique
+  mode             String        @default("link")
+  recipientId      String?
+  recipientEmail   String?
+  passwordHash     String?
+  canView          Boolean       @default(false)
+  canDownload      Boolean       @default(false)
+  canPrint         Boolean       @default(false)
+  canComment       Boolean       @default(false)
+  canReshare       Boolean       @default(false)
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  expiredAuditedAt DateTime?
+  maxDownloads     Int?
+  downloadCount    Int           @default(0)
+  parentShareId    String?
+  createdAt        DateTime      @default(now())
+  document         Document      @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  recipient        User?         @relation("ShareRecipient", fields: [recipientId], references: [id], onDelete: Restrict)
+  parent           Share?        @relation("ShareChildren", fields: [parentShareId], references: [id], onDelete: Restrict)
+  children         Share[]       @relation("ShareChildren")
+  shareSessions    ShareSession[]
+  comments         Comment[]
+  auditEvents      AuditLog[]
+  @@index([documentId, createdAt])
+  @@index([recipientId, createdAt])
+  @@index([expiresAt, revokedAt])
+  @@index([parentShareId])
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  publicId   String   @unique
+  documentId String
+  shareId    String
+  userId     String
+  body       String
+  createdAt  DateTime @default(now())
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  share      Share    @relation(fields: [shareId], references: [id], onDelete: Restrict)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([documentId, createdAt])
+  @@index([shareId, createdAt])
+}
+
+model AuditLog {
+  seq              Int       @id @default(autoincrement())
+  timestamp        DateTime
+  actorPublicId    String?
+  documentPublicId String?
+  sharePublicId    String?
+  action           String
+  ip               String?
+  userAgent        String?
+  result           String
+  reason           String?
+  prevHash         String
+  eventHash        String    @unique
+  actor            User?     @relation("AuditActor", fields: [actorPublicId], references: [publicId], onDelete: Restrict)
+  document         Document? @relation(fields: [documentPublicId], references: [publicId], onDelete: Restrict)
+  share            Share?    @relation(fields: [sharePublicId], references: [publicId], onDelete: Restrict)
+  @@index([timestamp])
+  @@index([documentPublicId, timestamp])
+  @@index([sharePublicId, timestamp])
+}
+
+model SecurityAlert {
+  id        String       @id @default(cuid())
+  publicId  String       @unique
+  dedupeKey String       @unique
+  rule      String
+  severity  String
+  risk      Int
+  subject   String
+  count     Int          @default(1)
+  status    String       @default("OPEN")
+  ownerId   String?
+  lastSeen  DateTime     @default(now())
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  owner     User?        @relation("AlertOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  events    AlertEvent[]
+  @@index([status, severity])
+  @@index([ownerId, status])
+  @@index([rule, lastSeen])
+}
+
+model AlertEvent {
+  id        String        @id @default(cuid())
+  alertId   String
+  auditSeq  Int?
+  detail    String
+  createdAt DateTime      @default(now())
+  alert     SecurityAlert @relation(fields: [alertId], references: [id], onDelete: Restrict)
+  @@index([alertId, createdAt])
+  @@index([auditSeq])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  publicId  String   @unique
+  userId    String
+  kind      String
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([userId, read, createdAt])
+}
+
+model Policy {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model RateLimitBucket {
+  id            String   @id @default(cuid())
+  keyHash       String   @unique
+  count         Int      @default(0)
+  windowStarted DateTime
+  blockedUntil  DateTime?
+  updatedAt     DateTime @updatedAt
+  @@index([updatedAt])
+}
+
+model AuthToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  purpose   String
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([userId, purpose, expiresAt])
+}
+
+model BackupCode {
+  id        String    @id @default(cuid())
+  codeHash  String    @unique
+  userId    String
+  createdAt DateTime  @default(now())
+  usedAt    DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([userId, usedAt])
+}

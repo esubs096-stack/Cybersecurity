@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "VaultShare"
+description = "VaultShare is a secure document-sharing control center for individuals and teams, with encrypted uploads, precise share permissions, expiration, revocation, alerts, and tamper-evident audit history."
+version = "1.0.0"
+id = "artifacts/vaultshare"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23570
+
+[services.development]
+run = "pnpm --filter @workspace/vaultshare run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vaultshare", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/vaultshare/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23570"
+BASE_PATH = "/"
